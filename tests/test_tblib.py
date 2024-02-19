@@ -111,6 +111,80 @@ KeyboardInterrupt"""
     assert tb4.as_dict() == tb3.as_dict() == tb2.as_dict() == tb1.as_dict() == expected_dict
 
 
+def test_parse_traceback_with_anchor():
+    tb1 = Traceback.from_string(
+        """
+Traceback (most recent call last):
+  File "file1", line 10, in <module>
+    function() + something()
+    ^^^^^^^^^^
+  File "file2", line 20, in function
+    return subfunction()
+           ^^^^^^^^^^^^^
+  File "file3", line 30, in subfunction
+    raise ValueError("something is wrong")
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: something is wrong
+"""
+    )
+
+    e = ValueError('something is wrong')
+    e.__traceback__ = tb1.as_traceback()
+    assert traceback.format_exception(e) == [
+        'Traceback (most recent call last):\n',
+        '  File "file1", line 10, in <module>\n',
+        '  File "file2", line 20, in function\n',
+        '  File "file3", line 30, in subfunction\n',
+        'ValueError: something is wrong\n',
+    ]
+
+    expected_dict = {
+        'tb_frame': {
+            'f_code': {'co_filename': 'file1', 'co_name': '<module>'},
+            'f_globals': {'__file__': 'file1', '__name__': '?'},
+            'f_locals': {},
+            'f_lineno': 10,
+            'anchor': {
+                'colno': 0,
+                'end_colno': 10,
+            },
+        },
+        'tb_lineno': 10,
+        'tb_next': {
+            'tb_frame': {
+                'f_code': {'co_filename': 'file2', 'co_name': 'function'},
+                'f_globals': {'__file__': 'file2', '__name__': '?'},
+                'f_locals': {},
+                'f_lineno': 20,
+                'anchor': {
+                    'colno': 7,
+                    'end_colno': 20,
+                },
+            },
+            'tb_lineno': 20,
+            'tb_next': {
+                'tb_frame': {
+                    'f_code': {'co_filename': 'file3', 'co_name': 'subfunction'},
+                    'f_globals': {'__file__': 'file3', '__name__': '?'},
+                    'f_locals': {},
+                    'f_lineno': 30,
+                    'anchor': {
+                        'colno': 6,
+                        'end_colno': 38,
+                    },
+                },
+                'tb_lineno': 30,
+                'tb_next': None,
+            },
+        },
+    }
+    tb2 = Traceback.from_dict(expected_dict)
+    tb3 = pickle.loads(pickle.dumps(tb2))
+    assert tb3.as_dict() == expected_dict
+    assert tb2.as_dict() == expected_dict
+    assert tb1.as_dict() == expected_dict
+
+
 def test_pytest_integration(testdir):
     test = testdir.makepyfile(
         """

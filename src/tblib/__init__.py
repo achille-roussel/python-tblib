@@ -1,12 +1,12 @@
 import re
 import sys
+import traceback
 from types import CodeType
 
 __version__ = '3.0.0'
 __all__ = 'Traceback', 'TracebackParseError', 'Frame', 'Code'
 
 FRAME_RE = re.compile(r'^\s*File "(?P<co_filename>.+)", line (?P<tb_lineno>\d+)(, in (?P<co_name>.+))?$')
-
 
 class _AttrDict(dict):
     __slots__ = ()
@@ -62,6 +62,7 @@ class Frame:
         self.f_globals = {k: v for k, v in frame.f_globals.items() if k in ('__file__', '__name__')}
         self.f_code = Code(frame.f_code)
         self.f_lineno = frame.f_lineno
+        self.anchor = getattr(frame, 'anchor', None)
 
     def clear(self):
         """
@@ -119,7 +120,20 @@ class Traceback:
         tb = None
         while current:
             f_code = current.tb_frame.f_code
-            code = compile('\n' * (current.tb_lineno - 1) + 'raise __traceback_maker', current.tb_frame.f_code.co_filename, 'exec')
+            offset = 0
+            length = 0
+            blanks = current.tb_lineno - 1
+            if current.tb_frame.anchor is None:
+                code = 'raise __traceback_maker'
+            else:
+                offset = current.tb_frame.anchor.colno
+                length = current.tb_frame.anchor.end_colno - current.tb_frame.anchor.colno
+                separator = ' ' * offset
+                exception = 'X' * length
+                blanks = max(0, blanks - 1)
+                code = f"1 + \\\n{separator}{exception}()\n\ndef {exception}():\n  raise __traceback_maker"
+            print(code)
+            code = compile('\n' * blanks + code, current.tb_frame.f_code.co_filename, 'exec')
             if hasattr(code, 'replace'):
                 # Python 3.8 and newer
                 code = code.replace(co_argcount=0, co_filename=f_code.co_filename, co_name=f_code.co_name, co_freevars=(), co_cellvars=())
@@ -142,9 +156,12 @@ class Traceback:
                     (),
                 )
 
+            globalvars, localvars = dict(current.tb_frame.f_globals), dict(current.tb_frame.f_locals)
+            #globalvars[exception] = globals()['__traceback_maker']
+
             # noinspection PyBroadException
             try:
-                exec(code, dict(current.tb_frame.f_globals), dict(current.tb_frame.f_locals))  # noqa: S102
+                exec(code, globalvars, localvars)  # noqa: S102
             except Exception:
                 next_tb = sys.exc_info()[2].tb_next
                 if top_tb is None:
@@ -183,6 +200,12 @@ class Traceback:
             'f_code': code,
             'f_lineno': self.tb_frame.f_lineno,
         }
+        anchor = self.tb_frame.anchor
+        if anchor is not None:
+            frame['anchor'] = {
+                'colno': anchor.colno,
+                'end_colno': anchor.end_colno,
+            }
         return {
             'tb_frame': frame,
             'tb_lineno': self.tb_lineno,
@@ -211,6 +234,12 @@ class Traceback:
             f_code=code,
             f_lineno=dct['tb_frame']['f_lineno'],
         )
+        anchor = dct['tb_frame'].get('anchor')
+        if anchor:
+            frame['anchor'] = _AttrDict(
+                colno=anchor['colno'],
+                end_colno=anchor['end_colno'],
+            )
         tb = _AttrDict(
             tb_frame=frame,
             tb_lineno=dct['tb_lineno'],
@@ -226,16 +255,30 @@ class Traceback:
         """
         frames = []
         header = strict
+        lines = string.splitlines()
 
-        for line in string.splitlines():
-            line = line.rstrip()
+        i = 0
+        while i < len(lines):
+            line = lines[i].rstrip()
+            i += 1
             if header:
                 if line == 'Traceback (most recent call last):':
                     header = False
                 continue
             frame_match = FRAME_RE.match(line)
             if frame_match:
-                frames.append(frame_match.groupdict())
+                frame = frame_match.groupdict()
+                # Find out if the next line contains a caret, and derive the
+                # column positions from that.
+                next_line = lines[i+1].removeprefix('    ') if i+1 < len(lines) else ''
+                next_line_dedented = next_line.lstrip()
+                if next_line_dedented.startswith('^'):
+                    frame['anchor'] = {
+                        'colno': len(next_line) - len(next_line_dedented),
+                        'end_colno': len(next_line),
+                    }
+                    i += 2
+                frames.append(frame)
             elif line.startswith('  '):
                 pass
             elif strict:
@@ -255,6 +298,7 @@ class Traceback:
                         f_locals={},
                         f_code=_AttrDict(frame),
                         f_lineno=int(frame['tb_lineno']),
+                        anchor=_AttrDict(frame['anchor']) if 'anchor' in frame else None,
                     ),
                     tb_next=previous,
                 )
